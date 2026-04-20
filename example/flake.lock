@@ -128,13 +128,13 @@
         "poetry2nix": "poetry2nix"
       },
       "locked": {
-        "lastModified": 1,
-        "narHash": "sha256-2/nucSQjupFKX+2442nqIiiDbrAdSLdGBIUJh3YiPME=",
-        "path": "./test",
+        "lastModified": 0,
+        "narHash": "sha256-yTW1lSrYerC9o8PI4bdSvpzG1NXF1wV3L6l5/z+ik7U=",
+        "path": "..",
         "type": "path"
       },
       "original": {
-        "path": "./test",
+        "path": "..",
         "type": "path"
       }
     },
