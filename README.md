@@ -4,23 +4,24 @@ Deterministic SOPS age key derivation for project-scoped secrets using HKDF (HMA
 
 ## Overview
 
-This tool automatically derives project-specific age encryption keys from a single master key using HKDF. It eliminates the need to manage separate age keys for each project while maintaining cryptographic isolation between repositories.
+This tool automatically derives project-specific age encryption keys from a single master key using HKDF. It eliminates the need to manage separate age keys for each project while maintaining cryptographic isolation between repositories and environments.
 
 ### Key Features
 
 - **Deterministic key derivation**: Same master key + same repo = same derived keys
-- **Multiple keys per project**: Support for environment-specific keys (staging, production, etc.)
-- **Automatic SOPS configuration**: Generates `.sops.yaml` with all recipients
+- **Config-driven key management**: Define multiple keys and path-based access rules in `.sops-kdf.yaml`
+- **Path-based encryption**: Different secrets can be encrypted for different recipients (servers, environments)
+- **Automatic SOPS configuration**: Generates `.sops.yaml` with proper YAML anchors and creation rules
 - **Git safety**: Automatically adds `.sops/` to `.gitignore`
 - **Zero key management**: Keys derived on-demand in your dev shell
 
 ## How It Works
 
 1. Reads your master key from `~/.sops/key.txt`
-2. Derives project-specific keys using HKDF with the git repository name as salt
-3. Generates multiple keys if suffixes are provided (e.g., `repo+staging`, `repo+prod`)
+2. Reads `.sops-kdf.yaml` to determine which keys and rules you need
+3. Derives all referenced keys using HKDF with the git repository name as salt
 4. Creates `.sops/keys.txt` with all private keys (for decryption)
-5. Creates `.sops.yaml` with all public keys (for encryption recipients)
+5. Creates `.sops.yaml` with YAML anchors and path-based creation rules
 6. Exports `SOPS_AGE_KEY_FILE` pointing to the local keys file
 
 ## Setup
@@ -77,34 +78,44 @@ The hook will automatically:
 
 ## Usage
 
-### Single Key (Default)
+### Configuration File
 
-For simple projects that don't need environment separation:
+Create a `.sops-kdf.yaml` file in your project root to define keys and access rules:
 
-```nix
-shellHook = ''
-  eval "$(${kdfTool}/bin/sops-kdf-hook)"
-'';
+```yaml
+rules:
+  # Server 1 specific secrets
+  # Decryptable by: project + server_1
+  - path_regex: secrets/server-1/[^/]+\.(yaml|json|env|ini)$
+    keys:
+      - server_1
+
+  # Server 2 specific secrets
+  # Decryptable by: project + server_2
+  - path_regex: secrets/server-2/[^/]+\.(yaml|json|env|ini)$
+    keys:
+      - server_2
+
+  # Common secrets accessible by both servers
+  # Decryptable by: project + server_1 + server_2
+  - path_regex: secrets/common/[^/]+\.(yaml|json|env|ini)$
+    keys:
+      - server_1
+      - server_2
+
+  # Default rule for any other files (only project key)
+  - path_regex: .*
+    keys: []
 ```
 
-This generates one key derived from your repository name.
+Keys are automatically derived from the key names used in the rules. The tool will:
+1. Scan all rules and collect unique key names (`server_1`, `server_2`)
+2. Generate the `project` key (always included)
+3. Generate keys for each referenced name: `repo+server_1`, `repo+server_2`
 
-### Multiple Keys (Environment-Specific)
+### Simple Projects
 
-For projects with staging, production, or other environments:
-
-```nix
-shellHook = ''
-  eval "$(${kdfTool}/bin/sops-kdf-hook staging prod)"
-'';
-```
-
-This generates three keys:
-- `github.com/user/repo` (base key)
-- `github.com/user/repo+staging`
-- `github.com/user/repo+prod`
-
-All three public keys are added to `.sops.yaml`, so you can encrypt secrets for specific environments or all environments.
+If you don't create a `.sops-kdf.yaml` file, the tool generates a single `project` key and a default rule that encrypts all files for that key.
 
 ### Encrypting Secrets
 
@@ -112,9 +123,10 @@ Once configured, use SOPS normally:
 
 ```bash
 # Create/edit a secret file
-sops secrets.yaml
+sops secrets/server-1/config.yaml
 
-# The file will be encrypted for all recipients in .sops.yaml
+# SOPS will automatically encrypt it for: project + server_1
+# (based on the path_regex match in .sops.yaml)
 ```
 
 ### Decrypting Secrets
@@ -123,23 +135,38 @@ SOPS will automatically use the keys from `.sops/keys.txt` (via `SOPS_AGE_KEY_FI
 
 ```bash
 # View secrets
-sops secrets.yaml
+sops secrets/server-1/config.yaml
 
 # Decrypt to stdout
-sops -d secrets.yaml
+sops -d secrets/server-1/config.yaml
 ```
+
+### Key Distribution
+
+To grant access to specific environments/servers:
+
+1. **Share the entire `.sops/keys.txt`** - Full access to all secrets
+2. **Share specific keys** - Extract individual keys from `.sops/keys.txt` for limited access
+   - Example: Share only the `server_1` key with Server 1 administrators
+   - They can decrypt `secrets/server-1/*` but not `secrets/server-2/*`
 
 ## Generated Files
 
 ### `.sops/keys.txt`
 
-Contains all derived private age keys (newline-separated):
+Contains all derived private age keys (newline-separated with comments):
 
 ```
 # Auto-generated age keys for SOPS
 # DO NOT COMMIT THIS FILE
 
+# project
 AGE-SECRET-KEY-1...
+
+# server_1
+AGE-SECRET-KEY-1...
+
+# server_2
 AGE-SECRET-KEY-1...
 ```
 
@@ -147,15 +174,34 @@ AGE-SECRET-KEY-1...
 
 ### `.sops.yaml`
 
-SOPS configuration with all public key recipients:
+SOPS configuration with YAML anchors and path-based creation rules:
 
 ```yaml
+keys:
+  - &project age1...
+  - &server_1 age1...
+  - &server_2 age1...
+
 creation_rules:
-  - path_regex: .*
-    age: age1...,age1...,age1...
+  - path_regex: secrets/server-1/[^/]+\.(yaml|json|env|ini)$
+    key_groups:
+      - age:
+          - *project
+          - *server_1
+  - path_regex: secrets/server-2/[^/]+\.(yaml|json|env|ini)$
+    key_groups:
+      - age:
+          - *project
+          - *server_2
+  - path_regex: secrets/common/[^/]+\.(yaml|json|env|ini)$
+    key_groups:
+      - age:
+          - *project
+          - *server_1
+          - *server_2
 ```
 
-**Tip**: You can customize this file to add path-specific rules.
+**Note**: The `project` key is automatically added to all rules. This is auto-generated from `.sops-kdf.yaml`.
 
 ### `.gitignore`
 
@@ -183,23 +229,30 @@ Each project gets cryptographically isolated keys:
 - Keys are deterministic: same inputs always produce same outputs
 - Uses HKDF-SHA256 for secure key derivation
 
-### Per-Environment Keys
+### Path-Based Access Control
 
-Using suffixes creates separate keys for different environments:
-- Staging team can only decrypt staging secrets
-- Production keys can be restricted to CI/CD
-- Each environment is cryptographically isolated
+Using path-based rules creates granular access control:
+- Server 1 administrators can only decrypt `secrets/server-1/*`
+- Server 2 administrators can only decrypt `secrets/server-2/*`
+- Both can decrypt `secrets/common/*`
+- Each secret path is cryptographically isolated
 
 ### Key Distribution
 
-To share access with teammates:
-1. They need the same master key in their `~/.sops/key.txt`
+**For development teams** (full access):
+1. Share the same master key in their `~/.sops/key.txt`
 2. They run `nix develop` to derive the same project keys
-3. Or, share specific derived private keys from `.sops/keys.txt` securely
+3. They can decrypt and edit all secrets
 
-To revoke access:
-- Remove their public key from `.sops.yaml`
-- Re-encrypt all secrets: `sops updatekeys secrets.yaml`
+**For production servers** (limited access):
+1. Extract the specific key from `.sops/keys.txt`
+2. Deploy only that key to the server
+3. Server can only decrypt secrets it needs
+
+**To revoke access**:
+- Remove the key reference from `.sops-kdf.yaml` rules
+- Regenerate keys: re-enter your dev shell
+- Re-encrypt affected secrets: `sops updatekeys secrets/**/*.yaml`
 
 ## How KDF Works
 
@@ -210,16 +263,17 @@ The tool uses HKDF (HMAC-based Key Derivation Function) with SHA-256:
 PRK = HMAC-SHA256(salt='age-kdf-salt', ikm=master_key)
 
 # Expand phase
-OKM = HMAC-SHA256(key=PRK, info=repo_id + '\x01')
+OKM = HMAC-SHA256(key=PRK, info=kdf_input + '\x01')
 
 # Encode as bech32
 derived_key = bech32_encode('age-secret-key-', OKM)
 ```
 
-Where `repo_id` is:
-- Base key: `github.com/user/repo`
-- Staging key: `github.com/user/repo+staging`
-- Prod key: `github.com/user/repo+prod`
+Where `kdf_input` is:
+- Project key: `github.com/user/repo`
+- Named keys: `github.com/user/repo+server_1`, `github.com/user/repo+server_2`, etc.
+
+Each key is cryptographically isolated - knowing one key reveals nothing about other keys.
 
 ## Troubleshooting
 
@@ -242,11 +296,13 @@ Ensure `age` is installed and in your PATH:
 nix-shell -p age
 ```
 
-### Keys not working after regeneration
+### Keys not working after changing config
 
-If you change suffixes or repo URL, new keys are generated. Re-encrypt your secrets:
+If you modify `.sops-kdf.yaml` (add/remove keys or rules), re-enter your dev shell to regenerate keys, then re-encrypt affected secrets:
 ```bash
-sops updatekeys secrets.yaml
+exit  # Exit dev shell
+nix develop  # Re-enter to regenerate keys
+sops updatekeys secrets/**/*.yaml  # Re-encrypt all secrets
 ```
 
 ## Example Project Structure
@@ -256,11 +312,26 @@ my-project/
 ├── flake.nix           # Includes sops-kdf in shellHook
 ├── .git/               # Git repository
 ├── .gitignore          # Auto-updated with .sops/
-├── .sops.yaml          # Auto-generated recipients config
+├── .sops-kdf.yaml      # Your key and rule definitions (committed)
+├── .sops.yaml          # Auto-generated SOPS config (committed)
 ├── .sops/
 │   └── keys.txt        # Auto-generated private keys (git-ignored)
-└── secrets.yaml        # Your encrypted secrets
+└── secrets/
+    ├── server-1/
+    │   └── config.yaml # Encrypted for: project + server_1
+    ├── server-2/
+    │   └── config.yaml # Encrypted for: project + server_2
+    └── common/
+        └── shared.yaml # Encrypted for: project + server_1 + server_2
 ```
+
+**What gets committed**:
+- `.sops-kdf.yaml` - Your configuration (rules and key references)
+- `.sops.yaml` - Auto-generated SOPS config (can be regenerated)
+- `secrets/**/*.yaml` - Encrypted secret files (safe to commit)
+
+**What's git-ignored**:
+- `.sops/keys.txt` - Private keys (never commit)
 
 ## Contributing
 

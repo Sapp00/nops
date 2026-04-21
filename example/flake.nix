@@ -23,13 +23,9 @@
 
       shellHook = ''
         export EDITOR=vim
-        # Dynamically derive and export the SOPS key for this shell
-        # Without suffixes (single key for repo):
-        # eval "$(${kdfTool}/bin/sops-kdf-hook)"
-
-        # With additional suffixes (multiple keys):
-        # This creates keys for: repo_name, repo_name+staging, repo_name+prod
-        eval "$(${kdfTool}/bin/sops-kdf-hook staging prod)"
+        # Dynamically derive and export SOPS keys for this shell
+        # Keys are automatically generated based on .sops-kdf.yaml config
+        eval "$(${kdfTool}/bin/sops-kdf-hook)"
       '';
     };
   };

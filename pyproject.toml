@@ -8,6 +8,7 @@ packages = [{include = "sops_kdf"}]
 [tool.poetry.dependencies]
 python = "^3.10"
 bech32 = "^1.2.0"
+pyyaml = "^6.0"
 
 [tool.poetry.scripts]
 sops-kdf-hook = "sops_kdf.main:run"

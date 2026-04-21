@@ -3,9 +3,10 @@ import subprocess
 import hashlib
 import hmac
 import re
-import argparse
 from pathlib import Path
+from typing import Dict, List, Tuple
 import bech32
+import yaml
 
 def log(msg):
     print(msg, file=sys.stderr)
@@ -65,11 +66,49 @@ def ensure_gitignore(project_root: Path):
 
     log(f"   -> ✅ Added .sops/ to .gitignore")
 
-def create_sops_keys_file(private_keys: list[str], project_root: Path) -> Path:
+def load_config(project_root: Path) -> dict:
+    """Load .sops-kdf.yaml configuration file.
+
+    Args:
+        project_root: Path to project root directory
+
+    Returns:
+        Parsed configuration dictionary
+    """
+    config_path = project_root / ".sops-kdf.yaml"
+
+    if not config_path.exists():
+        log("   -> ⚠️  No .sops-kdf.yaml found, using default configuration")
+        return {"rules": []}
+
+    with open(config_path, 'r') as f:
+        config = yaml.safe_load(f)
+
+    if not config:
+        return {"rules": []}
+
+    return config
+
+def collect_keys_from_rules(rules: List[dict]) -> set:
+    """Collect all unique key names from the rules.
+
+    Args:
+        rules: List of rule dictionaries
+
+    Returns:
+        Set of unique key names
+    """
+    keys = set()
+    for rule in rules:
+        rule_keys = rule.get('keys', [])
+        keys.update(rule_keys)
+    return keys
+
+def create_sops_keys_file(keys_data: Dict[str, Tuple[str, str]], project_root: Path) -> Path:
     """Create .sops/keys.txt file with newline-separated private keys.
 
     Args:
-        private_keys: List of private age keys
+        keys_data: Dictionary mapping key names to (private_key, public_key) tuples
         project_root: Path to project root directory
 
     Returns:
@@ -82,42 +121,69 @@ def create_sops_keys_file(private_keys: list[str], project_root: Path) -> Path:
     with open(keys_file, 'w') as f:
         f.write("# Auto-generated age keys for SOPS\n")
         f.write("# DO NOT COMMIT THIS FILE\n\n")
-        for key in private_keys:
-            f.write(f"{key}\n")
+        for key_name, (private_key, _) in keys_data.items():
+            f.write(f"# {key_name}\n")
+            f.write(f"{private_key}\n\n")
 
     # Set restrictive permissions (readable only by user)
     keys_file.chmod(0o600)
 
-    log(f"   -> ✅ Created .sops/keys.txt with {len(private_keys)} key(s)")
+    log(f"   -> ✅ Created .sops/keys.txt with {len(keys_data)} key(s)")
     return keys_file
 
-def create_sops_yaml(public_keys: list[str], project_root: Path):
-    """Create .sops.yaml config file with the given public keys.
+def create_sops_yaml(keys_data: Dict[str, Tuple[str, str]], rules: List[dict], project_root: Path):
+    """Create .sops.yaml config file with keys and creation rules.
 
     Args:
-        public_keys: List of public age keys
+        keys_data: Dictionary mapping key names to (private_key, public_key) tuples
+        rules: List of rule dictionaries with path_regex and keys
         project_root: Path to project root directory
     """
     sops_yaml_path = project_root / ".sops.yaml"
 
-    # Build the YAML content with comma-separated public keys
-    yaml_content = "creation_rules:\n"
-    yaml_content += "  - path_regex: .*\n"
-    yaml_content += "    age: "
-    yaml_content += ','.join(public_keys)
-    yaml_content += '\n'
+    # Build YAML content manually to have proper formatting
+    yaml_content = "keys:\n"
+
+    # Add key anchors
+    for key_name, (_, public_key) in keys_data.items():
+        yaml_content += f"  - &{key_name} {public_key}\n"
+
+    yaml_content += "\ncreation_rules:\n"
+
+    if not rules:
+        # Default rule: all files, all keys
+        yaml_content += "  - path_regex: .*\n"
+        yaml_content += "    key_groups:\n"
+        yaml_content += "      - age:\n"
+        for key_name in keys_data.keys():
+            yaml_content += f"          - *{key_name}\n"
+    else:
+        # Custom rules from config
+        for rule in rules:
+            path_regex = rule.get('path_regex', '.*')
+            rule_keys = rule.get('keys', [])
+
+            yaml_content += f"  - path_regex: {path_regex}\n"
+            yaml_content += "    key_groups:\n"
+            yaml_content += "      - age:\n"
+
+            # Always include project key first
+            yaml_content += "          - *project\n"
+
+            # Add additional keys specified in the rule
+            for key_name in rule_keys:
+                if key_name in keys_data and key_name != 'project':
+                    yaml_content += f"          - *{key_name}\n"
 
     with open(sops_yaml_path, 'w') as f:
         f.write(yaml_content)
 
-    log(f"   -> ✅ Created .sops.yaml with {len(public_keys)} recipient(s)")
+    log(f"   -> ✅ Created .sops.yaml with {len(rules) if rules else 1} rule(s)")
 
 def run():
-    parser = argparse.ArgumentParser(description='Generate SOPS age keys using KDF')
-    parser.add_argument('suffixes', nargs='*', help='Additional suffixes for KDF (e.g., staging prod)')
-    args = parser.parse_args()
-
     log("🔐 Initializing project-scoped secrets...")
+
+    project_root = Path.cwd()
 
     # 1. Check for Git repo
     if not Path(".git").is_dir():
@@ -165,34 +231,36 @@ def run():
         log(f"   -> ⚠️  No valid key found in {master_key_path}")
         sys.exit(0)
 
-    # 5. Build list of KDF inputs: [repo_id, repo_id+suffix1, repo_id+suffix2, ...]
-    kdf_inputs = [repo_id]
-    if args.suffixes:
-        for suffix in args.suffixes:
-            kdf_inputs.append(f"{repo_id}+{suffix}")
+    # 5. Load configuration
+    config = load_config(project_root)
+    rules = config.get('rules', [])
 
-    # 6. Generate all key pairs
-    private_keys = []
-    public_keys = []
+    # 6. Collect all unique key names from rules
+    additional_keys = collect_keys_from_rules(rules)
 
-    for kdf_input in kdf_inputs:
+    # 7. Generate project key (always included)
+    keys_data = {}
+    priv_key, pub_key = derive_age_key(master_key, repo_id)
+    keys_data['project'] = (priv_key, pub_key)
+    log(f"   -> ✅ Generated project key for: {repo_id}")
+
+    # 8. Generate all keys referenced in rules
+    for key_name in sorted(additional_keys):
+        kdf_input = f"{repo_id}+{key_name}"
         priv_key, pub_key = derive_age_key(master_key, kdf_input)
-        private_keys.append(priv_key)
-        public_keys.append(pub_key)
-        log(f"   -> ✅ Generated key for: {kdf_input}")
+        keys_data[key_name] = (priv_key, pub_key)
+        log(f"   -> ✅ Generated key: {key_name}")
 
-    project_root = Path.cwd()
-
-    # 7. Ensure .sops/ is in .gitignore
+    # 9. Ensure .sops/ is in .gitignore
     ensure_gitignore(project_root)
 
-    # 8. Create .sops/keys.txt with all private keys
-    keys_file = create_sops_keys_file(private_keys, project_root)
+    # 10. Create .sops/keys.txt with all private keys
+    keys_file = create_sops_keys_file(keys_data, project_root)
 
-    # 9. Create .sops.yaml with all public keys
-    create_sops_yaml(public_keys, project_root)
+    # 11. Create .sops.yaml with keys and rules
+    create_sops_yaml(keys_data, rules, project_root)
 
-    # 10. Export SOPS_AGE_KEY_FILE pointing to the keys file
+    # 12. Export SOPS_AGE_KEY_FILE pointing to the keys file
     print(f"export SOPS_AGE_KEY_FILE='{keys_file.absolute()}'")
 
 if __name__ == '__main__':
