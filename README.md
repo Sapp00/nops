@@ -1,5 +1,7 @@
 # nops
 
+[![Tests](https://github.com/sapp00/nops/actions/workflows/test.yml/badge.svg)](https://github.com/sapp00/nops/actions/workflows/test.yml)
+
 **nops** (nice ops / nix ops) is a simple CLI tool for managing SOPS encryption keys. It helps you create, store, and manage project-specific age keys encrypted with your master key.
 
 ## Features

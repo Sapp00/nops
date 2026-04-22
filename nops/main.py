@@ -116,83 +116,93 @@ def get_master_public_key(master_key: str) -> str:
         sys.exit(1)
 
 def load_keys(project_root: Path, master_key_path: Path) -> Dict[str, Tuple[str, str]]:
-    """Decrypt and load project keys from .sops/keys.txt.age.
+    """Decrypt and load project keys from .sops/keys.yaml.
 
     Returns:
         Dictionary mapping key names to (private_key, public_key) tuples
     """
-    keys_file_encrypted = project_root / ".sops" / "keys.txt.age"
+    keys_file = project_root / ".sops" / "keys.yaml"
 
-    if not keys_file_encrypted.exists():
+    if not keys_file.exists():
         return {}
 
     try:
         result = subprocess.run(
-            ["age", "-d", "-i", str(master_key_path), str(keys_file_encrypted)],
+            ["sops", "-d", str(keys_file)],
             capture_output=True,
             text=True,
-            check=True
+            check=True,
+            env={**subprocess.os.environ, "SOPS_AGE_KEY_FILE": str(master_key_path)}
         )
-        keys_content = result.stdout
+        keys_data = yaml.safe_load(result.stdout)
     except subprocess.CalledProcessError as e:
         log(f"❌ Failed to decrypt keys file: {e.stderr}")
         sys.exit(1)
     except FileNotFoundError:
-        log("❌ age command not found. Please install age.")
+        log("❌ sops command not found. Please install SOPS.")
         sys.exit(1)
 
-    # Parse keys file
+    if not keys_data:
+        return {}
+
+    # Convert to dict with tuples
     keys = {}
-    current_key_name = None
-    for line in keys_content.split('\n'):
-        line = line.strip()
-        if line.startswith('# ') and not line.startswith('# SOPS') and not line.startswith('# DO NOT'):
-            current_key_name = line[2:].strip()
-        elif line.startswith('AGE-SECRET-KEY-'):
-            private_key = line
-            # Derive public key
-            try:
-                result = subprocess.run(
-                    ["age-keygen", "-y"],
-                    input=private_key,
-                    capture_output=True,
-                    text=True,
-                    check=True
-                )
-                public_key = result.stdout.strip()
-                if current_key_name:
-                    keys[current_key_name] = (private_key, public_key)
-                current_key_name = None
-            except subprocess.CalledProcessError:
-                continue
+    for key_name, key_info in keys_data.items():
+        private_key = key_info['private']
+        public_key = key_info['public']
+        keys[key_name] = (private_key, public_key)
 
     return keys
 
 def save_keys(keys: Dict[str, Tuple[str, str]], project_root: Path, master_public_key: str):
-    """Encrypt and save keys to .sops/keys.txt.age."""
+    """Encrypt and save keys to .sops/keys.yaml using SOPS."""
     sops_dir = project_root / ".sops"
     sops_dir.mkdir(exist_ok=True)
 
-    # Build keys content
-    keys_content = "# SOPS Keys - Auto-managed by nops\n"
-    keys_content += "# DO NOT EDIT MANUALLY\n\n"
+    keys_file = sops_dir / "keys.yaml"
 
-    for key_name, (private_key, _) in sorted(keys.items()):
-        keys_content += f"# {key_name}\n"
-        keys_content += f"{private_key}\n\n"
+    # Build keys structure
+    keys_dict = {}
+    for key_name, (private_key, public_key) in sorted(keys.items()):
+        keys_dict[key_name] = {
+            'private': private_key,
+            'public': public_key
+        }
 
-    # Encrypt with age
-    keys_file_encrypted = sops_dir / "keys.txt.age"
+    # Create temporary .sops.yaml for encrypting keys.yaml
+    temp_sops_yaml = sops_dir / ".sops.yaml"
+    temp_sops_config = {
+        "creation_rules": [
+            {
+                "path_regex": "keys\\.yaml$",
+                "age": [master_public_key]
+            }
+        ]
+    }
+
     try:
+        # Write temp SOPS config
+        with open(temp_sops_yaml, 'w') as f:
+            yaml.dump(temp_sops_config, f)
+
+        # Write plaintext keys
+        with open(keys_file, 'w') as f:
+            yaml.dump(keys_dict, f, default_flow_style=False, sort_keys=False)
+
+        # Encrypt with SOPS
         subprocess.run(
-            ["age", "-r", master_public_key, "-o", str(keys_file_encrypted)],
-            input=keys_content,
-            capture_output=True,
-            text=True,
-            check=True
+            ["sops", "-e", "-i", str(keys_file)],
+            check=True,
+            cwd=str(sops_dir)
         )
+
+        # Clean up temp config
+        temp_sops_yaml.unlink()
+
     except subprocess.CalledProcessError as e:
         log(f"❌ Failed to encrypt keys file: {e.stderr}")
+        if temp_sops_yaml.exists():
+            temp_sops_yaml.unlink()
         sys.exit(1)
 
 def load_sops_yaml(project_root: Path) -> dict:
@@ -222,42 +232,22 @@ def cmd_create(args):
     master_key = get_master_key()
     master_public_key = get_master_public_key(master_key)
 
-    # Load existing keys
     keys = load_keys(project_root, master_key_path)
 
     if key_name in keys:
         log(f"❌ Key '{key_name}' already exists")
         sys.exit(1)
 
-    # Generate new key
     log(f"🔑 Generating key '{key_name}'...")
     private_key, public_key = generate_age_key()
     keys[key_name] = (private_key, public_key)
 
-    # Save encrypted keys
     save_keys(keys, project_root, master_public_key)
-
-    # Update .sops.yaml - add key as anchor
-    sops_config = load_sops_yaml(project_root)
-
-    # Add to keys section (with YAML anchor)
-    if "keys" not in sops_config:
-        sops_config["keys"] = []
-
-    # Check if key already exists in YAML
-    key_exists = any(
-        isinstance(k, dict) and k.get(key_name) == public_key
-        for k in sops_config["keys"]
-    )
-
-    if not key_exists:
-        sops_config["keys"].append({key_name: public_key})
-
-    save_sops_yaml(sops_config, project_root)
 
     log(f"✅ Key '{key_name}' created")
     log(f"   Public key: {public_key}")
-    log(f"   Add this key to creation_rules in .sops.yaml to use it")
+    log(f"   Encrypted in .sops/keys.yaml")
+    log(f"   Add '{public_key}' to creation_rules in .sops.yaml to use it")
 
 def cmd_edit(args):
     """Edit a secret file with SOPS."""
@@ -337,20 +327,12 @@ def cmd_init(args):
     master_public_key = get_master_public_key(master_key)
 
     # Create minimal .sops.yaml with master key
+    # Simple format that SOPS can parse correctly
     sops_config = {
-        "keys": [
-            {"master": master_public_key}
-        ],
         "creation_rules": [
             {
                 "path_regex": ".*",
-                "key_groups": [
-                    {
-                        "age": [
-                            {"master": None}  # Will be replaced with anchor
-                        ]
-                    }
-                ]
+                "age": [master_public_key]
             }
         ]
     }
@@ -397,7 +379,7 @@ Examples:
 
     # encrypt command
     parser_encrypt = subparsers.add_parser('encrypt', help='Encrypt a file')
-    parser_encrypt.add_argument('file', help='File to encrypt')
+    parser_encrypt.add_argument('file_arg', help='File to encrypt')
     parser_encrypt.set_defaults(func=cmd_encrypt)
 
     # export command
@@ -411,11 +393,14 @@ Examples:
     args = parser.parse_args()
 
     if args.command:
+        # Handle subcommands
+        if args.command == 'encrypt':
+            # Rename file_arg to file for consistency
+            args.file = args.file_arg
         args.func(args)
-    elif args.file:
+    elif hasattr(args, 'file') and args.file:
         # Default: edit file
-        args.func = cmd_edit
-        args.func(args)
+        cmd_edit(args)
     else:
         parser.print_help()
         sys.exit(1)
