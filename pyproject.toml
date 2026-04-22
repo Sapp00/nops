@@ -9,6 +9,10 @@ packages = [{include = "nops"}]
 python = "^3.10"
 pyyaml = "^6.0"
 
+[tool.poetry.group.dev.dependencies]
+pytest = "^7.4.0"
+pytest-cov = "^4.1.0"
+
 [tool.poetry.scripts]
 nops = "nops.main:run"
 

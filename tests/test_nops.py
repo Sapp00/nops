@@ -378,5 +378,145 @@ class TestNopsProjectRoot:
         assert "No .sops.yaml found" in result.stderr
 
 
+class TestNopsUpdatekeys:
+    """Test nops updatekeys command."""
+
+    def test_updatekeys_single_file(self, temp_project, nops_env, temp_home):
+        """Test updating keys for a single file."""
+        # Initialize and create a secret
+        run_nops(["init"], temp_project, nops_env)
+
+        secret_file = temp_project / "secret.yaml"
+        secret_file.write_text("password: secret123\n")
+        run_nops(["encrypt", "secret.yaml"], temp_project, nops_env)
+
+        # Create a new key
+        run_nops(["create", "server1"], temp_project, nops_env)
+
+        # Get server1 public key
+        export_result = run_nops(["export", "server1"], temp_project, nops_env)
+        server1_public = None
+        for line in export_result.stdout.split('\n'):
+            if line.startswith('# Public:'):
+                server1_public = line.split(': ')[1].strip()
+                break
+
+        assert server1_public is not None
+
+        # Update .sops.yaml to include server1
+        sops_yaml = temp_project / ".sops.yaml"
+        config = yaml.safe_load(sops_yaml.read_text())
+        master_key = config["creation_rules"][0]["age"][0]
+        config["creation_rules"][0]["age"] = [master_key, server1_public]
+
+        with open(sops_yaml, 'w') as f:
+            yaml.dump(config, f)
+
+        # Update keys for the file
+        result = run_nops(["updatekeys", "-y", "secret.yaml"], temp_project, nops_env)
+
+        assert result.returncode == 0
+        assert "Successfully updated" in result.stderr
+
+    def test_updatekeys_directory(self, temp_project, nops_env, temp_home):
+        """Test updating keys for all files in a directory."""
+        run_nops(["init"], temp_project, nops_env)
+
+        # Create secrets directory with multiple files
+        secrets_dir = temp_project / "secrets"
+        secrets_dir.mkdir()
+
+        secret1 = secrets_dir / "secret1.yaml"
+        secret2 = secrets_dir / "secret2.yaml"
+        secret1.write_text("password: secret1\n")
+        secret2.write_text("password: secret2\n")
+
+        run_nops(["encrypt", "secrets/secret1.yaml"], temp_project, nops_env)
+        run_nops(["encrypt", "secrets/secret2.yaml"], temp_project, nops_env)
+
+        # Update keys for entire directory
+        result = run_nops(["updatekeys", "-y", "secrets/"], temp_project, nops_env)
+
+        assert result.returncode == 0
+        assert "Found 2 encrypted file(s)" in result.stderr
+        assert "Successfully updated 2 file(s)" in result.stderr
+
+    def test_updatekeys_skips_non_encrypted_files(self, temp_project, nops_env):
+        """Test that updatekeys skips non-encrypted files."""
+        run_nops(["init"], temp_project, nops_env)
+
+        # Create mix of encrypted and non-encrypted files
+        secrets_dir = temp_project / "secrets"
+        secrets_dir.mkdir()
+
+        encrypted_file = secrets_dir / "encrypted.yaml"
+        plain_file = secrets_dir / "plain.yaml"
+
+        encrypted_file.write_text("password: secret\n")
+        plain_file.write_text("not_encrypted: true\n")
+
+        # Only encrypt one file
+        run_nops(["encrypt", "secrets/encrypted.yaml"], temp_project, nops_env)
+
+        # Update keys for directory
+        result = run_nops(["updatekeys", "-y", "secrets/"], temp_project, nops_env)
+
+        assert result.returncode == 0
+        assert "Found 1 encrypted file(s)" in result.stderr
+
+    def test_updatekeys_no_encrypted_files(self, temp_project, nops_env):
+        """Test updatekeys with no encrypted files."""
+        run_nops(["init"], temp_project, nops_env)
+
+        secrets_dir = temp_project / "secrets"
+        secrets_dir.mkdir()
+
+        plain_file = secrets_dir / "plain.yaml"
+        plain_file.write_text("not_encrypted: true\n")
+
+        result = run_nops(["updatekeys", "-y", "secrets/"], temp_project, nops_env)
+
+        assert result.returncode == 0
+        assert "No SOPS-encrypted files found" in result.stderr
+
+    def test_updatekeys_current_directory(self, temp_project, nops_env):
+        """Test updatekeys without path argument (current directory)."""
+        run_nops(["init"], temp_project, nops_env)
+
+        secret_file = temp_project / "secret.yaml"
+        secret_file.write_text("password: secret123\n")
+        run_nops(["encrypt", "secret.yaml"], temp_project, nops_env)
+
+        # Run updatekeys without path argument
+        result = run_nops(["updatekeys", "-y"], temp_project, nops_env)
+
+        assert result.returncode == 0
+        assert "Found 1 encrypted file(s)" in result.stderr
+
+    def test_updatekeys_nested_directories(self, temp_project, nops_env):
+        """Test updatekeys recursively finds files in nested directories."""
+        run_nops(["init"], temp_project, nops_env)
+
+        # Create nested structure
+        level1 = temp_project / "level1"
+        level2 = level1 / "level2"
+        level2.mkdir(parents=True)
+
+        secret1 = level1 / "secret1.yaml"
+        secret2 = level2 / "secret2.yaml"
+
+        secret1.write_text("password: secret1\n")
+        secret2.write_text("password: secret2\n")
+
+        run_nops(["encrypt", "level1/secret1.yaml"], temp_project, nops_env)
+        run_nops(["encrypt", "level1/level2/secret2.yaml"], temp_project, nops_env)
+
+        # Update from top level
+        result = run_nops(["updatekeys", "-y", "level1/"], temp_project, nops_env)
+
+        assert result.returncode == 0
+        assert "Found 2 encrypted file(s)" in result.stderr
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

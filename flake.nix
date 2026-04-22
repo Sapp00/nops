@@ -20,6 +20,7 @@
           projectDir = ./.;
           python = pkgs.python311;
           propagatedBuildInputs = [ pkgs.age pkgs.sops ];
+          groups = [ ];  # Don't include dev dependencies
         };
       in {
         packages.default = nops-app;

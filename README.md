@@ -138,6 +138,24 @@ nops export server1 > /tmp/server1.key
 scp /tmp/server1.key server1:/etc/sops/key.txt
 ```
 
+### `nops updatekeys [path]`
+
+Update encryption keys for all SOPS-encrypted files after modifying `.sops.yaml`. Shows diffs for each file and asks for confirmation before applying changes.
+
+```bash
+# Update all encrypted files in secrets directory (interactive)
+nops updatekeys secrets/
+
+# Update specific file (interactive)
+nops updatekeys secrets/prod.yaml
+
+# Update all encrypted files in current directory (default)
+nops updatekeys
+
+# Auto-confirm without showing diffs (for CI/CD)
+nops updatekeys -y secrets/
+```
+
 ## Configuration
 
 ### `.sops.yaml`

@@ -313,6 +313,79 @@ def cmd_export(args):
     print(f"# Public: {public_key}")
     print(private_key)
 
+def is_sops_encrypted(file_path: Path, master_key_path: Path) -> bool:
+    """Check if a file is SOPS encrypted by attempting to decrypt it."""
+    try:
+        subprocess.run(
+            ["sops", "-d", str(file_path)],
+            env={**subprocess.os.environ, "SOPS_AGE_KEY_FILE": str(master_key_path)},
+            capture_output=True,
+            check=True
+        )
+        return True
+    except subprocess.CalledProcessError:
+        return False
+    except FileNotFoundError:
+        return False
+
+def cmd_updatekeys(args):
+    """Update keys for all SOPS-encrypted files in a directory."""
+    path = Path(args.path if args.path else '.').resolve()
+    master_key_path = Path.home() / ".sops" / "key.txt"
+    project_root = find_project_root(path if path.is_dir() else path.parent)
+
+    if not path.exists():
+        log(f"❌ Path not found: {path}")
+        sys.exit(1)
+
+    # Collect files to update
+    files_to_update = []
+    keys_yaml_path = project_root / ".sops" / "keys.yaml"
+
+    if path.is_file():
+        if is_sops_encrypted(path, master_key_path):
+            files_to_update.append(path)
+    else:
+        # Recursively find all SOPS-encrypted files
+        for file_path in path.rglob('*'):
+            # Skip .sops/keys.yaml as it's managed internally by nops
+            if file_path == keys_yaml_path:
+                continue
+            if file_path.is_file() and is_sops_encrypted(file_path, master_key_path):
+                files_to_update.append(file_path)
+
+    if not files_to_update:
+        log(f"❌ No SOPS-encrypted files found in {path}")
+        sys.exit(0)
+
+    # Show files to user
+    log(f"🔄 Found {len(files_to_update)} encrypted file(s):")
+    for file_path in files_to_update:
+        relative_path = file_path.relative_to(project_root)
+        log(f"   - {relative_path}")
+    log("")
+
+    # Run sops updatekeys - it will show diffs and ask for confirmation (unless -y flag)
+    try:
+        cmd = ["sops", "updatekeys"]
+        if args.yes:
+            cmd.append("-y")
+        cmd.extend([str(f) for f in files_to_update])
+
+        subprocess.run(
+            cmd,
+            env={**subprocess.os.environ, "SOPS_AGE_KEY_FILE": str(master_key_path)},
+            check=True
+        )
+
+        # Print success message
+        log(f"✅ Successfully updated {len(files_to_update)} file(s)")
+    except subprocess.CalledProcessError:
+        sys.exit(1)
+    except FileNotFoundError:
+        log("❌ sops command not found. Please install SOPS.")
+        sys.exit(1)
+
 def cmd_init(args):
     """Initialize a new nops project."""
     project_root = Path.cwd()
@@ -363,6 +436,7 @@ Examples:
   nops secrets/prod.yaml       # Edit encrypted file
   nops encrypt secrets/new.yaml # Encrypt a file
   nops export server1          # Export key for deployment
+  nops updatekeys secrets/     # Update keys for all encrypted files
         """
     )
 
@@ -386,6 +460,12 @@ Examples:
     parser_export = subparsers.add_parser('export', help='Export a key')
     parser_export.add_argument('name', help='Key name to export')
     parser_export.set_defaults(func=cmd_export)
+
+    # updatekeys command
+    parser_updatekeys = subparsers.add_parser('updatekeys', help='Update keys for encrypted files')
+    parser_updatekeys.add_argument('path', nargs='?', help='File or directory to update (default: current directory)')
+    parser_updatekeys.add_argument('-y', '--yes', action='store_true', help='Auto-confirm without showing diffs')
+    parser_updatekeys.set_defaults(func=cmd_updatekeys)
 
     # Default command: edit file
     parser.add_argument('file', nargs='?', help='File to edit with SOPS')
