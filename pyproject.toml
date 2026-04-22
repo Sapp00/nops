@@ -1,17 +1,16 @@
 [tool.poetry]
-name = "sops-kdf"
-version = "0.1.0"
-description = "Deterministic SOPS keys"
+name = "nops"
+version = "0.2.0"
+description = "Simple SOPS key management"
 authors = ["You"]
-packages = [{include = "sops_kdf"}]
+packages = [{include = "nops"}]
 
 [tool.poetry.dependencies]
 python = "^3.10"
-bech32 = "^1.2.0"
 pyyaml = "^6.0"
 
 [tool.poetry.scripts]
-sops-kdf-hook = "sops_kdf.main:run"
+nops = "nops.main:run"
 
 [build-system]
 requires = ["poetry-core>=1.0.0"]

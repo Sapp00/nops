@@ -1,5 +1,5 @@
 {
-  description = "SOPS KDF Flake";
+  description = "nops - Simple SOPS key management";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11";
@@ -15,21 +15,20 @@
       let
         pkgs = nixpkgs.legacyPackages.${system};
         inherit (poetry2nix.lib.mkPoetry2Nix { inherit pkgs; }) mkPoetryApplication;
-        
-        sops-kdf-app = mkPoetryApplication {
+
+        nops-app = mkPoetryApplication {
           projectDir = ./.;
           python = pkgs.python311;
-          propagatedBuildInputs = [ pkgs.git pkgs.age ];
+          propagatedBuildInputs = [ pkgs.age pkgs.sops ];
         };
       in {
-        packages.default = sops-kdf-app;
+        packages.default = nops-app;
 
         devShells.default = pkgs.mkShell {
-          packages = [ pkgs.poetry ];
-          inputsFrom = [ sops-kdf-app ];
+          packages = [ pkgs.poetry pkgs.age pkgs.sops ];
+          inputsFrom = [ nops-app ];
 
           shellHook = ''
-            # Tell SOPS to use vim
             export EDITOR="vim"
           '';
         };
