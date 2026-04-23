@@ -12,7 +12,7 @@ ENV/
 env/
 .env
 
-# Poetry (keep poetry.lock for reproducible builds)
+# uv (keep uv.lock for reproducible builds)
 
 # Distribution / packaging
 dist/

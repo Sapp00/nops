@@ -54,8 +54,8 @@ def nops_env(temp_home):
 
 def run_nops(args, cwd, env):
     """Helper to run nops command."""
-    # Use python -m to run nops from the module
-    cmd = ["python", "-m", "nops.main"] + args
+    # Use uv run to run nops as a script
+    cmd = ["uv", "run", "nops"] + args
     result = subprocess.run(
         cmd,
         cwd=str(cwd),

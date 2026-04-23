@@ -183,7 +183,7 @@ def save_keys(keys: Dict[str, Tuple[str, str]], project_root: Path, master_publi
     try:
         # Write temp SOPS config
         with open(temp_sops_yaml, 'w') as f:
-            yaml.dump(temp_sops_config, f)
+            yaml.dump(temp_sops_config, f, default_flow_style=False, sort_keys=False)
 
         # Write plaintext keys
         with open(keys_file, 'w') as f:

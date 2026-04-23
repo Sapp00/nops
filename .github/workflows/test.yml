@@ -33,23 +33,13 @@ jobs:
         sudo mv sops-v${SOPS_VERSION}.linux.amd64 /usr/local/bin/sops
         sudo chmod +x /usr/local/bin/sops
 
-    - name: Install Poetry
-      uses: snok/install-poetry@v1
+    - name: Install uv
+      uses: astral-sh/setup-uv@v5
       with:
-        version: latest
-        virtualenvs-create: true
-        virtualenvs-in-project: true
-
-    - name: Load cached venv
-      id: cached-poetry-dependencies
-      uses: actions/cache@v4
-      with:
-        path: .venv
-        key: venv-${{ runner.os }}-${{ matrix.python-version }}-${{ hashFiles('**/pyproject.toml') }}
+        enable-cache: true
 
     - name: Install dependencies
-      if: steps.cached-poetry-dependencies.outputs.cache-hit != 'true'
-      run: poetry install --no-interaction
+      run: uv sync
 
     - name: Create master age key
       run: |
@@ -57,12 +47,12 @@ jobs:
         age-keygen -o ~/.sops/key.txt
 
     - name: Run tests
-      run: poetry run pytest tests/ -v --tb=short
+      run: uv run pytest tests/ -v --tb=short
 
     - name: Run tests with coverage
       if: matrix.python-version == '3.11'
       run: |
-        poetry run pytest tests/ --cov=nops --cov-report=xml --cov-report=term
+        uv run pytest tests/ --cov=nops --cov-report=xml --cov-report=term
 
     - name: Upload coverage
       if: matrix.python-version == '3.11'
