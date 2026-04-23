@@ -189,11 +189,10 @@ def save_keys(keys: Dict[str, Tuple[str, str]], project_root: Path, master_publi
         with open(keys_file, 'w') as f:
             yaml.dump(keys_dict, f, default_flow_style=False, sort_keys=False)
 
-        # Encrypt with SOPS
+        # Encrypt with SOPS using temp config
         subprocess.run(
-            ["sops", "-e", "-i", str(keys_file)],
-            check=True,
-            cwd=str(sops_dir)
+            ["sops", "--config", str(temp_sops_yaml), "-e", "-i", str(keys_file)],
+            check=True
         )
 
         # Clean up temp config
