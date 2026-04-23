@@ -51,6 +51,11 @@ jobs:
       if: steps.cached-poetry-dependencies.outputs.cache-hit != 'true'
       run: poetry install --no-interaction
 
+    - name: Create master age key
+      run: |
+        mkdir -p ~/.sops
+        age-keygen -o ~/.sops/key.txt
+
     - name: Run tests
       run: poetry run pytest tests/ -v --tb=short
 
