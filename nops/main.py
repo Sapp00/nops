@@ -175,7 +175,11 @@ def save_keys(keys: Dict[str, Tuple[str, str]], project_root: Path, master_publi
         "creation_rules": [
             {
                 "path_regex": "keys\\.yaml$",
-                "age": [master_public_key]
+                "key_groups": [
+                    {
+                        "age": [master_public_key]
+                    }
+                ]
             }
         ]
     }
@@ -189,9 +193,9 @@ def save_keys(keys: Dict[str, Tuple[str, str]], project_root: Path, master_publi
         with open(keys_file, 'w') as f:
             yaml.dump(keys_dict, f, default_flow_style=False, sort_keys=False)
 
-        # Encrypt with SOPS using temp config
+        # Encrypt with SOPS using temp config (use absolute paths)
         subprocess.run(
-            ["sops", "--config", str(temp_sops_yaml), "-e", "-i", str(keys_file)],
+            ["sops", "--config", str(temp_sops_yaml.resolve()), "-e", "-i", str(keys_file.resolve())],
             check=True
         )
 
